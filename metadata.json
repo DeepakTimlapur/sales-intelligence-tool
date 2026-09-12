@@ -1,0 +1,6 @@
+{
+  "name": "Sales Objections Handling Assistant",
+  "description": "High-ticket sales objections handling and intelligence platform by Manuj Bajaj powered by Stab & Twist and 6KLH methodologies.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
