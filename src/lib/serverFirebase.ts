@@ -313,8 +313,15 @@ export async function activateTrialAtomic(
   const hasUsedTrial = fields.hasUsedTrial?.booleanValue === true;
   const trialStartDateVal = fields.trialStartDate?.stringValue;
 
-  // Strict check: prevent activating trial more than once
-  if (hasUsedTrial || trialStartDateVal || currentPlan === 'trial') {
+  // Verify user is currently on the free plan and has not already used the trial
+  if (currentPlan !== 'free') {
+    return {
+      success: false,
+      error: 'Trial activation is only available for accounts on the free plan.'
+    };
+  }
+
+  if (hasUsedTrial || trialStartDateVal) {
     return {
       success: false,
       error: 'You have already activated your 30-day free trial. The trial offer is valid only once per account.'
@@ -336,6 +343,7 @@ export async function activateTrialAtomic(
         update: {
           name: `projects/${config.projectId}/databases/${config.firestoreDatabaseId}/documents/users/${uid}`,
           fields: {
+            uid: { stringValue: uid },
             plan: { stringValue: 'trial' },
             subscriptionStatus: { stringValue: 'active' },
             trialStartDate: { stringValue: trialStartDate },
@@ -347,6 +355,7 @@ export async function activateTrialAtomic(
         },
         updateMask: {
           fieldPaths: [
+            'uid',
             'plan',
             'subscriptionStatus',
             'trialStartDate',
@@ -366,12 +375,11 @@ export async function activateTrialAtomic(
           fields: {
             uid: { stringValue: uid },
             type: { stringValue: 'trial_grant' },
-            amount: { integerValue: String(TRIAL_TOKEN_ALLOCATION) },
+            amount: { integerValue: '3000' },
             balanceBefore: { integerValue: String(currentBalance) },
             balanceAfter: { integerValue: String(newBalance) },
-            description: { stringValue: `30-Day Free Trial Activation (+${TRIAL_TOKEN_ALLOCATION.toLocaleString()} Tokens)` },
-            createdAt: { stringValue: trialStartDate },
-            referenceId: { stringValue: 'trial_activation' }
+            description: { stringValue: '30-Day Free Trial Activation (+3,000 Tokens)' },
+            createdAt: { stringValue: trialStartDate }
           }
         },
         currentDocument: {
