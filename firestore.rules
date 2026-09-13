@@ -1,0 +1,127 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128;
+    }
+
+    match /users/{uid} {
+      allow get: if isOwner(uid) && isValidId(uid);
+      allow list: if false;
+      allow create: if isOwner(uid) && isValidId(uid)
+                    && request.resource.data.uid == request.auth.uid
+                    && request.resource.data.plan == 'free'
+                    && request.resource.data.tokenBalance == 1000
+                    && (request.resource.data.subscriptionStatus == 'free' || request.resource.data.subscriptionStatus == 'active')
+                    && (!('trialStartDate' in request.resource.data) || request.resource.data.trialStartDate == null)
+                    && (!('trialEndDate' in request.resource.data) || request.resource.data.trialEndDate == null)
+                    && (!('hasUsedTrial' in request.resource.data) || request.resource.data.hasUsedTrial == false)
+                    && (!('subscriptionStartDate' in request.resource.data) || request.resource.data.subscriptionStartDate == null)
+                    && (!('subscriptionEndDate' in request.resource.data) || request.resource.data.subscriptionEndDate == null)
+                    && (!('paymentCustomerId' in request.resource.data) || request.resource.data.paymentCustomerId == null)
+                    && (!('paymentSubscriptionId' in request.resource.data) || request.resource.data.paymentSubscriptionId == null);
+      allow update: if isOwner(uid) && isValidId(uid)
+                    && request.resource.data.uid == request.auth.uid
+                    && (
+                      // 1. Safe Client Profile Update (Name, Photo, Timestamp only)
+                      (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'photoURL', 'updatedAt'])
+                       && request.resource.data.plan == resource.data.plan
+                       && request.resource.data.subscriptionStatus == resource.data.subscriptionStatus
+                       && request.resource.data.tokenBalance == resource.data.tokenBalance
+                       && request.resource.data.trialStartDate == resource.data.trialStartDate
+                       && request.resource.data.trialEndDate == resource.data.trialEndDate
+                       && request.resource.data.hasUsedTrial == resource.data.hasUsedTrial
+                       && request.resource.data.subscriptionStartDate == resource.data.subscriptionStartDate
+                       && request.resource.data.subscriptionEndDate == resource.data.subscriptionEndDate
+                       && request.resource.data.paymentCustomerId == resource.data.paymentCustomerId
+                       && request.resource.data.paymentSubscriptionId == resource.data.paymentSubscriptionId)
+                      ||
+                      // 2. Server-executed Token Deduction (Decreasing tokens only, plan preserved)
+                      (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['tokenBalance', 'updatedAt'])
+                       && request.resource.data.tokenBalance is int
+                       && request.resource.data.tokenBalance < resource.data.tokenBalance
+                       && request.resource.data.tokenBalance >= 0
+                       && request.resource.data.plan == resource.data.plan
+                       && request.resource.data.subscriptionStatus == resource.data.subscriptionStatus)
+                      ||
+                      // 3. Server-executed One-Time Trial Activation
+                      (resource.data.plan == 'free'
+                       && resource.data.hasUsedTrial != true
+                       && resource.data.trialStartDate == null
+                       && request.resource.data.plan == 'trial'
+                       && request.resource.data.subscriptionStatus == 'active'
+                       && request.resource.data.hasUsedTrial == true
+                       && request.resource.data.trialStartDate is string
+                       && request.resource.data.trialEndDate is string
+                       && request.resource.data.tokenBalance is int
+                       && request.resource.data.tokenBalance > resource.data.tokenBalance)
+                      ||
+                      // 4. Server-verified Razorpay Monthly Subscription Activation / Renewal
+                      (request.resource.data.plan == 'monthly'
+                       && request.resource.data.subscriptionStatus == 'active'
+                       && request.resource.data.paymentProvider == 'razorpay'
+                       && request.resource.data.tokenBalance is int
+                       && request.resource.data.tokenBalance > resource.data.tokenBalance
+                       && request.resource.data.updatedAt is string)
+                      ||
+                      // 5. Server-verified Razorpay One-Time Token Pack Purchase (+30,000 tokens)
+                      (request.resource.data.tokenBalance is int
+                       && request.resource.data.tokenBalance > resource.data.tokenBalance
+                       && request.resource.data.paymentProvider == 'razorpay'
+                       && request.resource.data.updatedAt is string)
+                      ||
+                      // 6. Server-verified Subscription Status update (cancelled / paused / expired)
+                      (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subscriptionStatus', 'updatedAt'])
+                       && request.resource.data.subscriptionStatus in ['active', 'cancelled', 'paused', 'expired'])
+                    );
+      allow delete: if false;
+    }
+
+    match /tokenTransactions/{transactionId} {
+      allow get: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow create: if isSignedIn()
+                    && isValidId(transactionId)
+                    && request.resource.data.uid == request.auth.uid
+                    && request.resource.data.type in ['usage', 'credit', 'trial_grant', 'monthly_grant', 'purchase_grant']
+                    && request.resource.data.amount is int
+                    && request.resource.data.amount > 0
+                    && request.resource.data.balanceBefore is int
+                    && request.resource.data.balanceAfter is int
+                    && request.resource.data.description is string
+                    && request.resource.data.createdAt is string;
+      allow update, delete: if false;
+    }
+
+    match /payments/{paymentId} {
+      allow get: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow create: if isSignedIn()
+                    && isValidId(paymentId)
+                    && request.resource.data.uid == request.auth.uid
+                    && request.resource.data.provider == 'razorpay'
+                    && request.resource.data.currency == 'INR'
+                    && request.resource.data.amount is int
+                    && request.resource.data.amount > 0
+                    && request.resource.data.tokensGranted is int
+                    && request.resource.data.tokensGranted > 0
+                    && request.resource.data.status is string
+                    && request.resource.data.createdAt is string
+                    && request.resource.data.updatedAt is string;
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

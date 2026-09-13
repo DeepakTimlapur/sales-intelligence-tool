@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { ShieldAlert, AlertCircle, Award } from 'lucide-react';
+import { ShieldAlert, AlertCircle, Award, Loader2 } from 'lucide-react';
 import { Header } from './components/Header';
 import { SalesForm } from './components/SalesForm';
 import { LoadingState } from './components/LoadingState';
@@ -10,11 +10,18 @@ import { ClientQuestionsTab } from './components/ClientQuestionsTab';
 import { CalculatorTab } from './components/CalculatorTab';
 import { PlaybookTab } from './components/PlaybookTab';
 import { ActionButtons } from './components/ActionButtons';
+import { UserBar } from './components/UserBar';
+import { AuthCard } from './components/AuthCard';
+import { TokenUsageSection } from './components/TokenUsageSection';
+import { PricingPage } from './components/PricingPage';
+import { useAuth } from './context/AuthContext';
 import { generatePdfReport } from './utils/pdfGenerator';
-import { SAMPLE_REPORT } from './data/constants';
+import { SAMPLE_REPORT, REPORT_TOKEN_COST } from './data/constants';
 import { SalesReport } from './types';
 
 export const App: React.FC = () => {
+  const { user, profile, loading: authLoading, updateTokenBalance, refreshProfile } = useAuth();
+
   const [product, setProduct] = useState("");
   const [targetIndustry, setTargetIndustry] = useState("");
   const [businessModels, setBusinessModels] = useState<string[]>([]);
@@ -30,6 +37,7 @@ export const App: React.FC = () => {
   const [showQuestionHints, setShowQuestionHints] = useState(true);
   const [hasValidationAttempted, setHasValidationAttempted] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [currentView, setCurrentView] = useState<'assistant' | 'plans'>('assistant');
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -49,13 +57,28 @@ export const App: React.FC = () => {
       return;
     }
 
+    if (!user) {
+      setApiError("Authentication required. Please sign in to generate reports.");
+      return;
+    }
+
+    const currentBalance = profile?.tokenBalance ?? 0;
+    if (currentBalance < REPORT_TOKEN_COST) {
+      setApiError("Insufficient tokens. Please upgrade your plan or purchase more tokens.");
+      return;
+    }
+
     setLoading(true);
     setApiError(null);
 
     try {
+      const idToken = await user.getIdToken();
       const response = await fetch("/api/generate-sales-info", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${idToken}`
+        },
         body: JSON.stringify({
           product: product.trim(),
           targetIndustry: targetIndustry.trim(),
@@ -71,10 +94,17 @@ export const App: React.FC = () => {
         throw new Error(errJson.error || `Server responded with status ${response.status}`);
       }
 
-      const data: SalesReport = await response.json();
+      const data: any = await response.json();
       if (!data.objections || data.objections.length === 0) {
         throw new Error("Invalid response format received from AI model.");
       }
+
+      // Optimistic balance update from backend confirmation
+      if (typeof data._tokenBalance === "number") {
+        updateTokenBalance(data._tokenBalance);
+      }
+      refreshProfile();
+
       setReport(data);
     } catch (err: any) {
       console.error("Failed to generate sales report:", err);
@@ -206,11 +236,58 @@ Coach Manuj Bajaj Systems • 26 Books Authored • 10,000+ Coached
   const totalObjections = report?.objections.reduce((acc, cat) => acc + cat.items.length, 0) || 0;
   const totalQuestions = report?.client_questions.reduce((acc, cat) => acc + cat.items.length, 0) || 0;
 
+  // 1. Loading State during auth session check
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center justify-center p-4">
+        <Loader2 className="w-10 h-10 text-teal-400 animate-spin mb-4" />
+        <p className="text-sm font-semibold text-slate-300 tracking-wide">
+          Verifying secure SaaS session...
+        </p>
+      </div>
+    );
+  }
+
+  // 2. Protected Application Area: Unauthenticated view
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-100 text-slate-900 pb-16">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-6 sm:pt-8 space-y-8">
+          <Header />
+          <AuthCard />
+        </div>
+      </div>
+    );
+  }
+
+  // 3. Authenticated View: Pricing & Subscription Management View
+  if (currentView === 'plans') {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100">
+        <UserBar
+          onViewPlans={() => setCurrentView('assistant')}
+          currentView="plans"
+        />
+        <PricingPage onBackToAssistant={() => setCurrentView('assistant')} />
+      </div>
+    );
+  }
+
+  // 4. Authenticated View: Sales Objections Assistant with User Dashboard Bar
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 pb-16">
+      {/* SaaS User Bar */}
+      <UserBar
+        onViewPlans={() => setCurrentView('plans')}
+        currentView="assistant"
+      />
+
       <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-6 sm:pt-8 space-y-6">
         {/* Header with Coach profile */}
         <Header />
+
+        {/* Token Usage & Capacity Dashboard Section */}
+        <TokenUsageSection onViewPlans={() => setCurrentView('plans')} />
 
         {/* API Error Banner */}
         {apiError && (
@@ -222,13 +299,24 @@ Coach Manuj Bajaj Systems • 26 Books Authored • 10,000+ Coached
                 <p className="text-red-800 text-xs">{apiError}</p>
               </div>
             </div>
-            <button
-              onClick={handleLoadDemoReport}
-              className="bg-red-600 hover:bg-red-700 text-white font-bold text-xs px-3.5 py-2 rounded-lg transition-colors shrink-0 shadow-xs cursor-pointer"
-              id="btn-load-demo"
-            >
-              Load Offline Demo Report
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {apiError.toLowerCase().includes("insufficient tokens") ? (
+                <button
+                  onClick={() => setCurrentView('plans')}
+                  className="bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs px-3.5 py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
+                  id="btn-error-view-plans"
+                >
+                  View Plans & Upgrade
+                </button>
+              ) : null}
+              <button
+                onClick={handleLoadDemoReport}
+                className="bg-red-600 hover:bg-red-700 text-white font-bold text-xs px-3.5 py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
+                id="btn-load-demo"
+              >
+                Load Offline Demo Report
+              </button>
+            </div>
           </div>
         )}
 

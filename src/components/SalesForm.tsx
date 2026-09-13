@@ -1,6 +1,7 @@
 import React from 'react';
-import { Briefcase, Target, AlignLeft, ArrowRight, Sparkles } from 'lucide-react';
-import { BUSINESS_MODELS, DEAL_SIZES, BUYER_PROFILES } from '../data/constants';
+import { Briefcase, Target, AlignLeft, ArrowRight, Sparkles, Coins, AlertTriangle, ShieldAlert } from 'lucide-react';
+import { BUSINESS_MODELS, DEAL_SIZES, BUYER_PROFILES, REPORT_TOKEN_COST } from '../data/constants';
+import { useAuth } from '../context/AuthContext';
 
 interface SalesFormProps {
   product: string;
@@ -46,6 +47,10 @@ export const SalesForm: React.FC<SalesFormProps> = ({
       prev.includes(buyer) ? prev.filter(b => b !== buyer) : [...prev, buyer]
     );
   };
+
+  const { profile } = useAuth();
+  const tokenBalance = profile?.tokenBalance ?? 0;
+  const isInsufficient = tokenBalance < REPORT_TOKEN_COST;
 
   return (
     <div className="bg-white rounded-2xl p-6 md:p-8 shadow-sm border border-slate-200">
@@ -212,16 +217,48 @@ export const SalesForm: React.FC<SalesFormProps> = ({
           />
         </div>
 
-        {/* Submit Button */}
-        <div className="pt-2">
-          <button
-            type="submit"
-            className="w-full bg-slate-900 hover:bg-slate-950 border border-slate-800 active:scale-[0.99] text-white font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-all shadow-md group"
-            id="btn-submit-generate"
-          >
-            <span>Generate Sales Intelligence Report</span>
-            <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform text-emerald-400" />
-          </button>
+        {/* Submit Button & Token Tariff Indicator */}
+        <div className="pt-2 space-y-3">
+          {isInsufficient && (
+            <div
+              className="p-3.5 bg-amber-500/10 border border-amber-300 rounded-xl flex items-start gap-2.5 text-amber-900"
+              id="form-insufficient-tokens-warning"
+            >
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <div className="text-xs font-medium leading-relaxed">
+                <strong className="font-bold text-amber-950 block text-xs">
+                  Insufficient tokens. Please upgrade your plan or purchase more tokens.
+                </strong>
+                Generating an AI Sales Intelligence Report requires {REPORT_TOKEN_COST} tokens. You currently have {tokenBalance.toLocaleString()} tokens.
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-col sm:flex-row items-center gap-3">
+            <button
+              type="submit"
+              disabled={isInsufficient}
+              className={`flex-1 w-full py-3.5 px-6 rounded-xl flex items-center justify-center gap-2 font-black transition-all shadow-md ${
+                isInsufficient
+                  ? 'bg-slate-300 text-slate-500 border border-slate-300 cursor-not-allowed shadow-none'
+                  : 'bg-slate-900 hover:bg-slate-950 border border-slate-800 text-white active:scale-[0.99] cursor-pointer group'
+              }`}
+              id="btn-submit-generate"
+            >
+              <span>Generate Sales Intelligence Report</span>
+              <ArrowRight className={`w-5 h-5 transition-transform ${isInsufficient ? 'text-slate-400' : 'text-emerald-400 group-hover:translate-x-1'}`} />
+            </button>
+
+            {/* Token Usage Indicator */}
+            <div
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 border border-slate-200 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0 shadow-2xs"
+              id="indicator-token-cost"
+              title="Token cost per generated report"
+            >
+              <Coins className="w-3.5 h-3.5 text-amber-500" />
+              <span>{REPORT_TOKEN_COST} tokens per report</span>
+            </div>
+          </div>
         </div>
       </form>
     </div>

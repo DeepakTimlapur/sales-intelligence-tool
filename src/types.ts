@@ -47,3 +47,57 @@ export interface CoachNote {
   title: string;
   quote: string;
 }
+
+export type SubscriptionPlan = 'free' | 'trial' | 'monthly' | 'oneTime';
+export type SubscriptionStatus = 'active' | 'trialing' | 'expired' | 'cancelled' | 'free';
+
+export interface UserProfile {
+  uid: string;
+  name: string;
+  email: string;
+  photoURL: string;
+  plan: SubscriptionPlan;
+  tokenBalance: number;
+  subscriptionStatus: SubscriptionStatus;
+  monthlyTokenAllocation: number | null;
+  trialStartDate: string | null;
+  trialEndDate: string | null;
+  hasUsedTrial: boolean;
+  subscriptionStartDate: string | null;
+  subscriptionEndDate: string | null;
+  billingCycle: string | null;
+  paymentProvider: string | null;
+  paymentCustomerId: string | null;
+  paymentSubscriptionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TokenTransaction {
+  id?: string;
+  uid: string;
+  type: 'usage' | 'credit' | 'trial_grant' | 'monthly_grant' | 'purchase_grant';
+  amount: number;
+  balanceBefore: number;
+  balanceAfter: number;
+  description: string;
+  createdAt: string;
+  referenceId?: string;
+}
+
+export interface PaymentRecord {
+  id: string;
+  uid: string;
+  plan: SubscriptionPlan;
+  provider: 'razorpay';
+  razorpayOrderId?: string | null;
+  razorpayPaymentId: string;
+  razorpaySubscriptionId?: string | null;
+  amount: number;
+  currency: string;
+  status: 'captured' | 'active' | 'cancelled' | 'failed';
+  tokensGranted: number;
+  createdAt: string;
+  updatedAt: string;
+  idempotencyKey: string;
+}

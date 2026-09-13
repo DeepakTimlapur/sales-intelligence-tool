@@ -1,0 +1,231 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with SaaS subscription plan and token balance",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Unique Firebase Authentication UID"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the user"
+        },
+        "email": {
+          "type": "string",
+          "description": "Primary email address"
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Profile picture URL or empty string"
+        },
+        "plan": {
+          "type": "string",
+          "description": "Subscription tier such as free"
+        },
+        "tokenBalance": {
+          "type": "number",
+          "description": "Available tokens balance"
+        },
+        "subscriptionStatus": {
+          "type": "string",
+          "description": "Subscription status such as active"
+        },
+        "trialStartDate": {
+          "type": "string",
+          "description": "Trial start date ISO string or null"
+        },
+        "trialEndDate": {
+          "type": "string",
+          "description": "Trial end date ISO string or null"
+        },
+        "hasUsedTrial": {
+          "type": "boolean",
+          "description": "Whether the user has already activated their one-time free trial"
+        },
+        "monthlyTokenAllocation": {
+          "type": "number",
+          "description": "Monthly recurring token allocation or null"
+        },
+        "subscriptionStartDate": {
+          "type": "string",
+          "description": "Paid subscription start date ISO string or null"
+        },
+        "subscriptionEndDate": {
+          "type": "string",
+          "description": "Paid subscription end date ISO string or null"
+        },
+        "billingCycle": {
+          "type": "string",
+          "description": "Billing cadence such as monthly or null"
+        },
+        "paymentProvider": {
+          "type": "string",
+          "description": "Payment provider like stripe or razorpay or null"
+        },
+        "paymentCustomerId": {
+          "type": "string",
+          "description": "Payment gateway customer identifier or null"
+        },
+        "paymentSubscriptionId": {
+          "type": "string",
+          "description": "Payment gateway subscription identifier or null"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp ISO string"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last update timestamp ISO string"
+        }
+      },
+      "required": [
+        "uid",
+        "name",
+        "email",
+        "plan",
+        "tokenBalance",
+        "subscriptionStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TokenTransaction": {
+      "title": "TokenTransaction",
+      "description": "Immutable audit record of token deductions and credits",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "User ID who owns this transaction"
+        },
+        "type": {
+          "type": "string",
+          "description": "Transaction type: usage or credit"
+        },
+        "amount": {
+          "type": "number",
+          "description": "Number of tokens deducted or credited"
+        },
+        "balanceBefore": {
+          "type": "number",
+          "description": "User token balance before this transaction"
+        },
+        "balanceAfter": {
+          "type": "number",
+          "description": "User token balance after this transaction"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable transaction description"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp in ISO format"
+        },
+        "referenceId": {
+          "type": "string",
+          "description": "Optional reference ID e.g. report generation ID"
+        }
+      },
+      "required": [
+        "uid",
+        "type",
+        "amount",
+        "balanceBefore",
+        "balanceAfter",
+        "description",
+        "createdAt"
+      ]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Authoritative ledger record of verified Razorpay payments and subscriptions",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "User ID who owns this payment"
+        },
+        "plan": {
+          "type": "string",
+          "description": "Plan purchased e.g. monthly or oneTime"
+        },
+        "provider": {
+          "type": "string",
+          "description": "Payment gateway provider e.g. razorpay"
+        },
+        "razorpayOrderId": {
+          "type": "string",
+          "description": "Razorpay order ID for one-time payments or null"
+        },
+        "razorpayPaymentId": {
+          "type": "string",
+          "description": "Razorpay verified payment identifier"
+        },
+        "razorpaySubscriptionId": {
+          "type": "string",
+          "description": "Razorpay subscription identifier or null"
+        },
+        "amount": {
+          "type": "number",
+          "description": "Payment amount in rupees e.g. 1999 or 4999"
+        },
+        "currency": {
+          "type": "string",
+          "description": "Currency ISO code e.g. INR"
+        },
+        "status": {
+          "type": "string",
+          "description": "Payment status e.g. captured, active, or cancelled"
+        },
+        "tokensGranted": {
+          "type": "number",
+          "description": "Number of tokens credited to user balance"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Payment record creation timestamp in ISO format"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Payment record update timestamp in ISO format"
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "description": "Unique key to ensure transactions and webhooks are processed exactly once"
+        }
+      },
+      "required": [
+        "uid",
+        "plan",
+        "provider",
+        "razorpayPaymentId",
+        "amount",
+        "currency",
+        "status",
+        "tokensGranted",
+        "createdAt",
+        "updatedAt",
+        "idempotencyKey"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "User profile and SaaS membership metadata"
+    },
+    "/tokenTransactions/{transactionId}": {
+      "schema": "TokenTransaction",
+      "description": "Individual token debit or credit ledger records"
+    },
+    "/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Authoritative records of verified Razorpay payments and subscriptions"
+    }
+  }
+}

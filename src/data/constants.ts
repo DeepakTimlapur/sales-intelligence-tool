@@ -1,5 +1,7 @@
 import { CoachNote, SalesReport } from '../types';
 
+export const REPORT_TOKEN_COST = 100;
+
 export const BUSINESS_MODELS = [
   "B2B",
   "B2C",
