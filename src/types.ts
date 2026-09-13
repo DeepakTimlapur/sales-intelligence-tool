@@ -101,3 +101,34 @@ export interface PaymentRecord {
   updatedAt: string;
   idempotencyKey: string;
 }
+
+export type TranscriptFileType = 'txt' | 'srt' | 'vtt';
+
+export interface Transcript {
+  id: string;
+  title: string;
+  fileName: string;
+  fileType: TranscriptFileType;
+  uploadedBy: string;
+  uploadedAt: string;
+  status: 'processed' | 'processing' | 'failed';
+  chunkCount: number;
+  wordCount: number;
+  summary: string;
+}
+
+export interface TranscriptChunk {
+  id: string;
+  transcriptId: string;
+  title: string;
+  content: string;
+  chunkIndex: number;
+  createdAt: string;
+  relevanceScore?: number;
+}
+
+export interface KnowledgeRetrievalResult {
+  chunks: TranscriptChunk[];
+  promptContext: string;
+  matchedCount: number;
+}

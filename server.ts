@@ -12,8 +12,23 @@ import {
   deductTokensAtomic,
   activateTrialAtomic,
   recordPaymentAndCreditTokensAtomic,
-  getUserPayments
+  getUserPayments,
+  getSystemServerAuthToken,
+  findUserBySubscriptionId,
+  updateSubscriptionStatusAtomic,
+  recordFailedPayment
 } from "./src/lib/serverFirebase";
+import {
+  isAuthorizedAdmin,
+  parseTranscriptText,
+  chunkTranscript,
+  loadCache,
+  saveCache,
+  syncTranscriptToFirestore,
+  deleteTranscriptFromFirestore,
+  retrieveRelevantKnowledge
+} from "./src/lib/ragService";
+import { Transcript, TranscriptFileType, KnowledgeRetrievalResult } from "./src/types";
 
 dotenv.config();
 
@@ -93,7 +108,7 @@ app.post("/api/generate-sales-info", async (req: Request, res: Response): Promis
 
     if (userState.tokenBalance < REPORT_TOKEN_COST) {
       res.status(403).json({
-        error: "Insufficient tokens. Please upgrade your plan or purchase more tokens.",
+        error: "You need at least 100 tokens to generate a report.",
         tokenBalance: userState.tokenBalance,
         cost: REPORT_TOKEN_COST
       });
@@ -209,11 +224,26 @@ app.post("/api/generate-sales-info", async (req: Request, res: Response): Promis
       };
     }
 
+    // Retrieve relevant client video transcript knowledge via RAG
+    let ragResult: KnowledgeRetrievalResult = { chunks: [], promptContext: "", matchedCount: 0 };
+    try {
+      ragResult = retrieveRelevantKnowledge({
+        product,
+        targetIndustry,
+        businessModel,
+        dealSize,
+        buyerProfile,
+        additionalContext
+      });
+    } catch (ragErr) {
+      console.warn("The analysis completed, but transcript knowledge was temporarily unavailable:", ragErr);
+    }
+
     const prompt = `
 You are Manuj Bajaj, renowned Indian B2B sales coach, Amazon bestselling author of 26 books, and creator of the Stab & Twist and 6KLH sales objection handling methodologies.
 
 Generate a comprehensive, actionable, high-conversion sales intelligence report tailored for the Indian business context (with natural Hinglish flavor where appropriate for the Indian B2B/Lala-ji/MSME mindset).
-
+${ragResult.promptContext ? `\n${ragResult.promptContext}\n` : ""}
 PROSPECT PROFILE:
 - Product/Service being sold: ${product}
 - Target Industry: ${targetIndustry}
@@ -315,7 +345,8 @@ Return ONLY a valid JSON object strictly matching this schema:
     res.json({
       ...reportData,
       _tokenBalance: deductionResult.newBalance,
-      _transactionId: referenceId
+      _transactionId: referenceId,
+      _knowledgeUsed: ragResult.matchedCount
     });
   } catch (error: any) {
     console.error("Error in /api/generate-sales-info:", error);
@@ -533,31 +564,58 @@ app.post("/api/razorpay/verify-payment", async (req: Request, res: Response): Pr
           generated: generatedSignature,
           received: razorpay_signature
         });
-        res.status(400).json({ error: "Payment verification failed: Invalid HMAC signature." });
+        res.status(400).json({ error: "Payment could not be verified. No tokens were credited." });
         return;
       }
 
-      // Fetch payment details from Razorpay to verify amount and status
+      // Fetch payment details from Razorpay to verify amount, currency, order association, and status
       const paymentDetails: any = await razorpay.payments.fetch(razorpay_payment_id);
       if (!paymentDetails) {
-        res.status(400).json({ error: "Payment not found in Razorpay records." });
+        res.status(400).json({ error: "Payment could not be verified. No tokens were credited." });
         return;
       }
 
-      // If authorized but not captured, auto-capture
-      if (paymentDetails.status === "authorized") {
-        await razorpay.payments.capture(razorpay_payment_id, 499900, "INR");
-      } else if (paymentDetails.status !== "captured") {
-        res.status(400).json({
-          error: `Payment cannot be credited. Status is '${paymentDetails.status}', expected 'captured'.`
+      // Verify order association
+      if (paymentDetails.order_id && paymentDetails.order_id !== razorpay_order_id) {
+        console.error("Razorpay order ID mismatch:", {
+          expected: razorpay_order_id,
+          actual: paymentDetails.order_id
         });
+        res.status(400).json({ error: "Payment could not be verified. No tokens were credited." });
+        return;
+      }
+
+      // Verify user account association
+      if (paymentDetails.notes?.uid && paymentDetails.notes.uid !== user.uid) {
+        console.error("User ownership mismatch on payment:", {
+          orderUid: paymentDetails.notes.uid,
+          currentUid: user.uid
+        });
+        res.status(403).json({ error: "Payment could not be verified. No tokens were credited." });
+        return;
+      }
+
+      // Verify payment currency: Expected 'INR'
+      if (paymentDetails.currency !== "INR") {
+        console.error(`Invalid payment currency: ${paymentDetails.currency}`);
+        res.status(400).json({ error: "Payment could not be verified. No tokens were credited." });
         return;
       }
 
       // Verify payment amount: ₹4,999 = 499900 paise
       if (paymentDetails.amount !== 499900) {
+        console.error(`Payment amount mismatch: Expected 499900, got ${paymentDetails.amount}`);
+        res.status(400).json({ error: "Payment could not be verified. No tokens were credited." });
+        return;
+      }
+
+      // If authorized but not yet captured, auto-capture
+      if (paymentDetails.status === "authorized") {
+        await razorpay.payments.capture(razorpay_payment_id, 499900, "INR");
+      } else if (paymentDetails.status !== "captured") {
+        console.error(`Unexpected payment status: ${paymentDetails.status}`);
         res.status(400).json({
-          error: `Payment amount mismatch: Expected ₹4,999 (499900 paise), received ${paymentDetails.amount} paise.`
+          error: "Payment could not be verified. No tokens were credited."
         });
         return;
       }
@@ -573,7 +631,7 @@ app.post("/api/razorpay/verify-payment", async (req: Request, res: Response): Pr
       });
 
       if (!creditResult.success) {
-        res.status(500).json({ error: creditResult.error || "Failed to credit tokens to user balance." });
+        res.status(500).json({ error: creditResult.error || "Payment could not be verified. No tokens were credited." });
         return;
       }
 
@@ -602,14 +660,24 @@ app.post("/api/razorpay/verify-payment", async (req: Request, res: Response): Pr
           generated: generatedSignature,
           received: razorpay_signature
         });
-        res.status(400).json({ error: "Subscription verification failed: Invalid HMAC signature." });
+        res.status(400).json({ error: "Payment could not be verified. No tokens were credited." });
         return;
       }
 
       // Fetch subscription from Razorpay
       const subscriptionDetails: any = await razorpay.subscriptions.fetch(razorpay_subscription_id);
       if (!subscriptionDetails) {
-        res.status(400).json({ error: "Subscription not found in Razorpay records." });
+        res.status(400).json({ error: "Payment could not be verified. No tokens were credited." });
+        return;
+      }
+
+      // Verify user association if present in subscription notes
+      if (subscriptionDetails.notes?.uid && subscriptionDetails.notes.uid !== user.uid) {
+        console.error("Subscription user mismatch:", {
+          subUid: subscriptionDetails.notes.uid,
+          userUid: user.uid
+        });
+        res.status(403).json({ error: "Payment could not be verified. No tokens were credited." });
         return;
       }
 
@@ -624,7 +692,7 @@ app.post("/api/razorpay/verify-payment", async (req: Request, res: Response): Pr
       });
 
       if (!creditResult.success) {
-        res.status(500).json({ error: creditResult.error || "Failed to activate subscription and credit tokens." });
+        res.status(500).json({ error: creditResult.error || "Payment could not be verified. No tokens were credited." });
         return;
       }
 
@@ -647,13 +715,14 @@ app.post("/api/razorpay/verify-payment", async (req: Request, res: Response): Pr
     });
   } catch (error: any) {
     console.error("Error verifying Razorpay payment:", error);
-    res.status(500).json({ error: error.message || "Failed to verify Razorpay payment." });
+    res.status(500).json({ error: "Payment could not be verified. No tokens were credited." });
   }
 });
 
 /**
  * Razorpay: Webhook Verification Endpoint
  * Validates X-Razorpay-Signature using RAZORPAY_WEBHOOK_SECRET and raw request body.
+ * Authoritatively handles recurring monthly charges, token allocation, and subscription lifecycle events.
  */
 app.post("/api/razorpay/webhook", async (req: Request, res: Response): Promise<void> => {
   const webhookSignature = req.headers["x-razorpay-signature"] as string;
@@ -687,33 +756,164 @@ app.post("/api/razorpay/webhook", async (req: Request, res: Response): Promise<v
   console.log(`Verified Razorpay Webhook received: ${eventType}`);
 
   try {
+    const systemToken = await getSystemServerAuthToken();
+    if (!systemToken) {
+      console.error("Could not obtain system auth token for webhook processing.");
+      res.status(500).json({ error: "Internal server authentication error" });
+      return;
+    }
+
     switch (eventType) {
-      case "payment.captured": {
-        const payment = event.payload?.payment?.entity;
-        console.log(`Payment captured webhook: ID ${payment?.id}, Amount: ${payment?.amount}`);
-        break;
-      }
+      // 1. Recurring Monthly Subscription Charged
       case "subscription.charged": {
         const payment = event.payload?.payment?.entity;
         const subscription = event.payload?.subscription?.entity;
-        console.log(`Subscription charged webhook: Sub ID ${subscription?.id}, Pay ID ${payment?.id}`);
+
+        if (!payment || !subscription) {
+          console.warn("subscription.charged missing payment or subscription entity.");
+          break;
+        }
+
+        const subscriptionId = subscription.id;
+        const paymentId = payment.id;
+        // Deterministic idempotency key per payment charge
+        const idempotencyKey = `sub_charge_${paymentId}`;
+
+        // Find user UID: check subscription notes, payment notes, or query by subscriptionId in Firestore
+        let targetUid = subscription.notes?.uid || payment.notes?.uid;
+        if (!targetUid) {
+          targetUid = await findUserBySubscriptionId(systemToken, subscriptionId);
+        }
+
+        if (!targetUid) {
+          console.warn(`Could not determine target user UID for subscription ${subscriptionId}`);
+          break;
+        }
+
+        console.log(`Processing subscription.charged for user ${targetUid}, payment ${paymentId}`);
+        const creditResult = await recordPaymentAndCreditTokensAtomic(systemToken, targetUid, {
+          plan: "monthly",
+          amount: Math.round((payment.amount || 199900) / 100),
+          tokensToCredit: 10000,
+          razorpayPaymentId: paymentId,
+          razorpaySubscriptionId: subscriptionId,
+          idempotencyKey
+        });
+
+        if (creditResult.alreadyProcessed) {
+          console.log(`Recurring charge ${paymentId} already processed (idempotent skipped).`);
+        } else if (creditResult.success) {
+          console.log(`Successfully credited 10,000 recurring tokens to user ${targetUid}`);
+        } else {
+          console.error(`Failed to credit recurring tokens: ${creditResult.error}`);
+        }
         break;
       }
+
+      // 2. One-Time Payment Captured or Order Paid
+      case "payment.captured":
+      case "order.paid": {
+        const payment = event.payload?.payment?.entity;
+        if (!payment) break;
+
+        const plan = payment.notes?.plan;
+        const targetUid = payment.notes?.uid;
+
+        // Only handle one-time token pack purchases asynchronously if not already handled by client verify
+        if (plan === "oneTime" && targetUid && payment.amount === 499900) {
+          const paymentId = payment.id;
+          const orderId = payment.order_id;
+          const idempotencyKey = `pay_${paymentId}`;
+
+          console.log(`Processing webhook payment.captured for oneTime pack: user ${targetUid}`);
+          const creditResult = await recordPaymentAndCreditTokensAtomic(systemToken, targetUid, {
+            plan: "oneTime",
+            amount: 4999,
+            tokensToCredit: 30000,
+            razorpayPaymentId: paymentId,
+            razorpayOrderId: orderId,
+            idempotencyKey
+          });
+
+          if (creditResult.alreadyProcessed) {
+            console.log(`Payment ${paymentId} already processed (idempotent).`);
+          } else if (creditResult.success) {
+            console.log(`Successfully credited 30,000 tokens via webhook for user ${targetUid}`);
+          }
+        }
+        break;
+      }
+
+      // 3. Payment Failed
+      case "payment.failed": {
+        const payment = event.payload?.payment?.entity;
+        if (!payment) break;
+
+        const targetUid = payment.notes?.uid;
+        if (targetUid) {
+          console.warn(`Payment failed recorded for user ${targetUid}: payment ${payment.id}`);
+          await recordFailedPayment(systemToken, targetUid, {
+            paymentId: payment.id,
+            orderId: payment.order_id,
+            subscriptionId: payment.subscription_id,
+            amount: Math.round((payment.amount || 0) / 100),
+            errorDescription: payment.error_description || "Payment failed at gateway"
+          });
+        }
+        break;
+      }
+
+      // 4. Subscription Cancelled
       case "subscription.cancelled": {
         const subscription = event.payload?.subscription?.entity;
-        console.log(`Subscription cancelled webhook: Sub ID ${subscription?.id}`);
+        if (!subscription) break;
+
+        let targetUid = subscription.notes?.uid;
+        if (!targetUid) {
+          targetUid = await findUserBySubscriptionId(systemToken, subscription.id);
+        }
+
+        if (targetUid) {
+          console.log(`Setting subscription status to 'cancelled' for user ${targetUid}`);
+          await updateSubscriptionStatusAtomic(systemToken, targetUid, "cancelled");
+        }
         break;
       }
+
+      // 5. Subscription Paused
       case "subscription.paused": {
         const subscription = event.payload?.subscription?.entity;
-        console.log(`Subscription paused webhook: Sub ID ${subscription?.id}`);
+        if (!subscription) break;
+
+        let targetUid = subscription.notes?.uid;
+        if (!targetUid) {
+          targetUid = await findUserBySubscriptionId(systemToken, subscription.id);
+        }
+
+        if (targetUid) {
+          console.log(`Setting subscription status to 'paused' for user ${targetUid}`);
+          await updateSubscriptionStatusAtomic(systemToken, targetUid, "paused");
+        }
         break;
       }
+
+      // 6. Subscription Resumed
       case "subscription.resumed": {
         const subscription = event.payload?.subscription?.entity;
-        console.log(`Subscription resumed webhook: Sub ID ${subscription?.id}`);
+        if (!subscription) break;
+
+        let targetUid = subscription.notes?.uid;
+        if (!targetUid) {
+          targetUid = await findUserBySubscriptionId(systemToken, subscription.id);
+        }
+
+        if (targetUid) {
+          console.log(`Setting subscription status to 'active' for user ${targetUid}`);
+          await updateSubscriptionStatusAtomic(systemToken, targetUid, "active");
+        }
         break;
       }
+
       default:
         console.log(`Unhandled Razorpay event: ${eventType}`);
     }
@@ -743,6 +943,210 @@ app.get("/api/razorpay/payment-history", async (req: Request, res: Response): Pr
   } catch (error: any) {
     console.error("Error retrieving user payment history:", error);
     res.status(500).json({ error: error.message || "Failed to retrieve payment history." });
+  }
+});
+
+/**
+ * ============================================================================
+ * PHASE 3: CLIENT VIDEO TRANSCRIPT KNOWLEDGE BASE (ADMIN ENDPOINTS)
+ * ============================================================================
+ */
+
+/**
+ * Checks whether the authenticated user has administrator privileges.
+ * Server-authoritative validation using verified Firebase ID token email.
+ */
+app.get("/api/admin/check-status", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    const { user, error: authError } = await verifyFirebaseToken(authHeader);
+    if (!user) {
+      res.status(401).json({ isAdmin: false, error: authError || "Authentication required." });
+      return;
+    }
+    const isAdmin = isAuthorizedAdmin(user.email);
+    res.json({ isAdmin, email: user.email });
+  } catch (err: any) {
+    res.status(500).json({ isAdmin: false, error: err.message });
+  }
+});
+
+/**
+ * Lists all uploaded video transcripts for administrators.
+ */
+app.get("/api/admin/transcripts", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    const { user, error: authError } = await verifyFirebaseToken(authHeader);
+    if (!user) {
+      res.status(401).json({ error: authError || "Authentication required." });
+      return;
+    }
+    if (!isAuthorizedAdmin(user.email)) {
+      res.status(403).json({ error: "Administrator access required." });
+      return;
+    }
+
+    const cache = loadCache();
+    res.json({ success: true, transcripts: cache.transcripts });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to retrieve transcripts." });
+  }
+});
+
+/**
+ * Uploads, parses, chunks, and indexes a video transcript file (.txt, .srt, .vtt).
+ * Synchronizes metadata and chunks to Firestore and local persistent RAG index.
+ */
+app.post("/api/admin/transcripts/upload", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    const { user, idToken, error: authError } = await verifyFirebaseToken(authHeader);
+    if (!user || !idToken) {
+      res.status(401).json({ error: authError || "Authentication required." });
+      return;
+    }
+    if (!isAuthorizedAdmin(user.email)) {
+      res.status(403).json({ error: "Administrator access required." });
+      return;
+    }
+
+    const { title, fileName, fileContent, fileType } = req.body;
+    if (!title || !fileContent || !fileName) {
+      res.status(400).json({ error: "Title, fileName, and fileContent are required." });
+      return;
+    }
+
+    const validTypes: TranscriptFileType[] = ["txt", "srt", "vtt"];
+    const detectedExt = fileName.split(".").pop()?.toLowerCase();
+    const cleanType = ((fileType || detectedExt || "txt") as string).toLowerCase() as TranscriptFileType;
+
+    if (!validTypes.includes(cleanType)) {
+      res.status(400).json({ error: "Unsupported file format. Please upload .txt, .srt, or .vtt." });
+      return;
+    }
+
+    // Parse and normalize transcript text
+    const { text, wordCount } = parseTranscriptText(fileContent, cleanType);
+    if (wordCount < 10) {
+      res.status(400).json({
+        error: "The transcript file appears to be empty or contains insufficient dialogue text."
+      });
+      return;
+    }
+
+    const transcriptId = `tr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const chunks = chunkTranscript(transcriptId, title.trim(), text);
+
+    const transcript: Transcript = {
+      id: transcriptId,
+      title: title.trim(),
+      fileName: fileName.trim(),
+      fileType: cleanType,
+      uploadedBy: user.email || user.uid,
+      uploadedAt: new Date().toISOString(),
+      status: "processed",
+      chunkCount: chunks.length,
+      wordCount,
+      summary: text.slice(0, 240) + (text.length > 240 ? "..." : "")
+    };
+
+    // Update cache
+    const cache = loadCache();
+    // Check for duplicate fileName / title
+    const existingIndex = cache.transcripts.findIndex(
+      t => t.fileName.toLowerCase() === transcript.fileName.toLowerCase() || t.title.toLowerCase() === transcript.title.toLowerCase()
+    );
+    if (existingIndex >= 0) {
+      // Gracefully replace previous duplicate version
+      const oldId = cache.transcripts[existingIndex].id;
+      cache.transcripts[existingIndex] = transcript;
+      cache.chunks = cache.chunks.filter(c => c.transcriptId !== oldId).concat(chunks);
+    } else {
+      cache.transcripts.unshift(transcript);
+      cache.chunks.push(...chunks);
+    }
+    saveCache(cache);
+
+    // Sync to Firestore using admin token
+    syncTranscriptToFirestore(idToken, transcript, chunks).catch(err => {
+      console.warn("Background Firestore transcript sync notice:", err);
+    });
+
+    res.json({
+      success: true,
+      transcript,
+      chunksCount: chunks.length,
+      wordCount
+    });
+  } catch (err: any) {
+    console.error("Error processing transcript upload:", err);
+    res.status(500).json({ error: err.message || "Failed to process transcript upload." });
+  }
+});
+
+/**
+ * Retrieves the chunks of a specific transcript for admin inspection.
+ */
+app.get("/api/admin/transcripts/:id/chunks", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    const { user, error: authError } = await verifyFirebaseToken(authHeader);
+    if (!user) {
+      res.status(401).json({ error: authError || "Authentication required." });
+      return;
+    }
+    if (!isAuthorizedAdmin(user.email)) {
+      res.status(403).json({ error: "Administrator access required." });
+      return;
+    }
+
+    const transcriptId = req.params.id;
+    const cache = loadCache();
+    const chunks = cache.chunks.filter(c => c.transcriptId === transcriptId);
+    res.json({ success: true, chunks });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to retrieve transcript chunks." });
+  }
+});
+
+/**
+ * Deletes a transcript and all associated chunks.
+ */
+app.delete("/api/admin/transcripts/:id", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    const { user, idToken, error: authError } = await verifyFirebaseToken(authHeader);
+    if (!user || !idToken) {
+      res.status(401).json({ error: authError || "Authentication required." });
+      return;
+    }
+    if (!isAuthorizedAdmin(user.email)) {
+      res.status(403).json({ error: "Administrator access required." });
+      return;
+    }
+
+    const transcriptId = req.params.id;
+    const cache = loadCache();
+    const existing = cache.transcripts.find(t => t.id === transcriptId);
+    if (!existing) {
+      res.status(404).json({ error: "Transcript not found." });
+      return;
+    }
+
+    const chunkIds = cache.chunks.filter(c => c.transcriptId === transcriptId).map(c => c.id);
+    cache.transcripts = cache.transcripts.filter(t => t.id !== transcriptId);
+    cache.chunks = cache.chunks.filter(c => c.transcriptId !== transcriptId);
+    saveCache(cache);
+
+    // Sync deletion to Firestore
+    deleteTranscriptFromFirestore(idToken, transcriptId, chunkIds).catch(err => {
+      console.warn("Background Firestore transcript deletion notice:", err);
+    });
+
+    res.json({ success: true, deletedId: transcriptId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to delete transcript." });
   }
 });
 

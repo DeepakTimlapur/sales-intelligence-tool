@@ -212,6 +212,102 @@
         "updatedAt",
         "idempotencyKey"
       ]
+    },
+    "Transcript": {
+      "title": "Transcript",
+      "description": "Metadata for uploaded video transcripts in the knowledge base",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique transcript identifier"
+        },
+        "title": {
+          "type": "string",
+          "description": "Descriptive title of the transcript / masterclass"
+        },
+        "fileName": {
+          "type": "string",
+          "description": "Original file name"
+        },
+        "fileType": {
+          "type": "string",
+          "description": "Format such as txt, srt, or vtt"
+        },
+        "uploadedBy": {
+          "type": "string",
+          "description": "Email or UID of uploading admin"
+        },
+        "uploadedAt": {
+          "type": "string",
+          "description": "Upload timestamp in ISO format"
+        },
+        "status": {
+          "type": "string",
+          "description": "Processing status e.g. processed"
+        },
+        "chunkCount": {
+          "type": "number",
+          "description": "Number of semantic chunks extracted"
+        },
+        "wordCount": {
+          "type": "number",
+          "description": "Total words in transcript"
+        },
+        "summary": {
+          "type": "string",
+          "description": "Initial excerpt summary"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "fileName",
+        "fileType",
+        "uploadedBy",
+        "uploadedAt",
+        "status",
+        "chunkCount"
+      ]
+    },
+    "TranscriptChunk": {
+      "title": "TranscriptChunk",
+      "description": "Semantic chunk of dialogue from a video transcript for RAG context retrieval",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique chunk identifier"
+        },
+        "transcriptId": {
+          "type": "string",
+          "description": "Parent transcript identifier"
+        },
+        "title": {
+          "type": "string",
+          "description": "Parent transcript title"
+        },
+        "content": {
+          "type": "string",
+          "description": "Normalized text content of chunk"
+        },
+        "chunkIndex": {
+          "type": "number",
+          "description": "0-based chunk sequence index"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp in ISO format"
+        }
+      },
+      "required": [
+        "id",
+        "transcriptId",
+        "title",
+        "content",
+        "chunkIndex",
+        "createdAt"
+      ]
     }
   },
   "firestore": {
@@ -226,6 +322,14 @@
     "/payments/{paymentId}": {
       "schema": "Payment",
       "description": "Authoritative records of verified Razorpay payments and subscriptions"
+    },
+    "/transcripts/{transcriptId}": {
+      "schema": "Transcript",
+      "description": "Video transcript metadata for the sales coaching knowledge base"
+    },
+    "/transcriptChunks/{chunkId}": {
+      "schema": "TranscriptChunk",
+      "description": "Normalized chunks of coaching transcripts for RAG prompt augmentation"
     }
   }
 }

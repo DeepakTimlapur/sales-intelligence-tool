@@ -709,3 +709,217 @@ export async function getUserPayments(idToken: string, uid: string): Promise<any
   }
 }
 
+let cachedSystemToken: { token: string; expiresAt: number } | null = null;
+
+/**
+ * Obtains an authenticated Firebase ID token for background server-side operations
+ * (e.g., asynchronous Razorpay webhooks, recurring billing events).
+ */
+export async function getSystemServerAuthToken(): Promise<string | null> {
+  const now = Date.now();
+  if (cachedSystemToken && cachedSystemToken.expiresAt > now + 60000) {
+    return cachedSystemToken.token;
+  }
+
+  const config = getFirebaseServerConfig();
+  const email = process.env.SYSTEM_WORKER_EMAIL || 'sales-system-worker@salesassistant.internal';
+  const password = process.env.SYSTEM_WORKER_PASSWORD || 'SuperSecretSystemPassword2026!';
+
+  try {
+    const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${config.apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        password,
+        returnSecureToken: true
+      })
+    });
+
+    if (!res.ok) {
+      // Fallback: auto-register if account was cleared
+      const signUpRes = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${config.apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, returnSecureToken: true })
+      });
+      if (!signUpRes.ok) {
+        console.error('Failed to authenticate system server worker:', await signUpRes.text());
+        return null;
+      }
+      const signUpData = await signUpRes.json();
+      const expiresInSec = parseInt(signUpData.expiresIn || '3600', 10);
+      cachedSystemToken = {
+        token: signUpData.idToken,
+        expiresAt: now + expiresInSec * 1000
+      };
+      return signUpData.idToken;
+    }
+
+    const data = await res.json();
+    const expiresInSec = parseInt(data.expiresIn || '3600', 10);
+    cachedSystemToken = {
+      token: data.idToken,
+      expiresAt: now + expiresInSec * 1000
+    };
+    return data.idToken;
+  } catch (err) {
+    console.error('Error obtaining system server token:', err);
+    return null;
+  }
+}
+
+/**
+ * Finds user UID by paymentSubscriptionId when UID is not directly present in webhook payload notes.
+ */
+export async function findUserBySubscriptionId(idToken: string, subscriptionId: string): Promise<string | null> {
+  const config = getFirebaseServerConfig();
+  const basePath = `https://firestore.googleapis.com/v1/projects/${config.projectId}/databases/${config.firestoreDatabaseId}/documents`;
+  const queryUrl = `${basePath}:runQuery`;
+
+  try {
+    const res = await fetch(queryUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId: 'users' }],
+          where: {
+            fieldFilter: {
+              field: { fieldPath: 'paymentSubscriptionId' },
+              op: 'EQUAL',
+              value: { stringValue: subscriptionId }
+            }
+          },
+          limit: 1
+        }
+      })
+    });
+
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0 || !data[0].document) return null;
+
+    const parts = (data[0].document.name || '').split('/');
+    return parts[parts.length - 1] || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Updates subscription status (e.g. cancelled, paused, active) server-side upon webhook events.
+ */
+export async function updateSubscriptionStatusAtomic(
+  idToken: string,
+  uid: string,
+  newStatus: 'active' | 'cancelled' | 'paused' | 'expired'
+): Promise<{ success: boolean; error?: string }> {
+  const config = getFirebaseServerConfig();
+  const basePath = `https://firestore.googleapis.com/v1/projects/${config.projectId}/databases/${config.firestoreDatabaseId}/documents`;
+  const commitUrl = `${basePath}:commit`;
+
+  const now = new Date().toISOString();
+  const commitPayload = {
+    writes: [
+      {
+        update: {
+          name: `projects/${config.projectId}/databases/${config.firestoreDatabaseId}/documents/users/${uid}`,
+          fields: {
+            subscriptionStatus: { stringValue: newStatus },
+            updatedAt: { stringValue: now }
+          }
+        },
+        updateMask: {
+          fieldPaths: ['subscriptionStatus', 'updatedAt']
+        }
+      }
+    ]
+  };
+
+  try {
+    const res = await fetch(commitUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(commitPayload)
+    });
+
+    if (res.ok) {
+      return { success: true };
+    }
+    const errData = await res.json().catch(() => ({}));
+    return { success: false, error: errData.error?.message || 'Failed to update subscription status.' };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Records a failed payment event in the payments collection without crediting tokens.
+ */
+export async function recordFailedPayment(
+  idToken: string,
+  uid: string,
+  params: {
+    paymentId: string;
+    orderId?: string | null;
+    subscriptionId?: string | null;
+    amount: number;
+    errorDescription?: string;
+  }
+): Promise<{ success: boolean }> {
+  const config = getFirebaseServerConfig();
+  const basePath = `https://firestore.googleapis.com/v1/projects/${config.projectId}/databases/${config.firestoreDatabaseId}/documents`;
+  const commitUrl = `${basePath}:commit`;
+
+  const sanitizedPaymentId = params.paymentId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const paymentDocId = `pay_failed_${sanitizedPaymentId}`;
+  const now = new Date().toISOString();
+
+  const commitPayload = {
+    writes: [
+      {
+        update: {
+          name: `projects/${config.projectId}/databases/${config.firestoreDatabaseId}/documents/payments/${paymentDocId}`,
+          fields: {
+            uid: { stringValue: uid },
+            plan: { stringValue: params.subscriptionId ? 'monthly' : 'oneTime' },
+            provider: { stringValue: 'razorpay' },
+            razorpayPaymentId: { stringValue: params.paymentId },
+            razorpayOrderId: { stringValue: params.orderId || '' },
+            razorpaySubscriptionId: { stringValue: params.subscriptionId || '' },
+            amount: { integerValue: String(params.amount) },
+            currency: { stringValue: 'INR' },
+            status: { stringValue: 'failed' },
+            tokensGranted: { integerValue: '0' },
+            createdAt: { stringValue: now },
+            updatedAt: { stringValue: now },
+            idempotencyKey: { stringValue: `fail_${params.paymentId}` }
+          }
+        },
+        currentDocument: { exists: false }
+      }
+    ]
+  };
+
+  try {
+    const res = await fetch(commitUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(commitPayload)
+    });
+    return { success: res.ok };
+  } catch {
+    return { success: false };
+  }
+}
+

@@ -1,16 +1,20 @@
 import React from 'react';
-import { LogOut, Coins, ShieldCheck, Sparkles, ArrowLeft } from 'lucide-react';
+import { LogOut, Coins, ShieldCheck, Sparkles, ArrowLeft, BookOpen } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { formatPlanBadgeText, calculateRemainingTrialDays } from '../data/plans';
 
 interface UserBarProps {
   onViewPlans?: () => void;
-  currentView?: 'assistant' | 'plans';
+  onViewKnowledge?: () => void;
+  currentView?: 'assistant' | 'plans' | 'knowledge';
+  isAdmin?: boolean;
 }
 
 export const UserBar: React.FC<UserBarProps> = ({
   onViewPlans,
-  currentView = 'assistant'
+  onViewKnowledge,
+  currentView = 'assistant',
+  isAdmin = false
 }) => {
   const { user, profile, logout } = useAuth();
 
@@ -72,6 +76,32 @@ export const UserBar: React.FC<UserBarProps> = ({
 
         {/* Right: View Plans, Token Balance & Logout */}
         <div className="flex items-center gap-2 sm:gap-3 ml-auto sm:ml-0">
+          {/* Admin Knowledge Base Button (Shown only to authorized administrators) */}
+          {isAdmin && onViewKnowledge && (
+            <button
+              onClick={onViewKnowledge}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer shadow-xs ${
+                currentView === 'knowledge'
+                  ? 'bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700'
+                  : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30'
+              }`}
+              id="btn-toggle-knowledge-view"
+              title="Manage Video Transcript Knowledge Base (Admin)"
+            >
+              {currentView === 'knowledge' ? (
+                <>
+                  <ArrowLeft className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Assistant</span>
+                </>
+              ) : (
+                <>
+                  <BookOpen className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Knowledge Base</span>
+                </>
+              )}
+            </button>
+          )}
+
           {/* Manage Plan / View Plans Button */}
           {onViewPlans && (
             <button

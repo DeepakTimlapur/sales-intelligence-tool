@@ -14,11 +14,18 @@ service cloud.firestore {
       return id is string && id.size() > 0 && id.size() <= 128;
     }
 
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'deepak112085@gmail.com' ||
+        request.auth.token.email == 'sales-system-worker@salesassistant.internal'
+      );
+    }
+
     match /users/{uid} {
-      allow get: if isOwner(uid) && isValidId(uid);
+      allow get: if (isOwner(uid) || isAdmin()) && isValidId(uid);
       allow list: if false;
-      allow create: if isOwner(uid) && isValidId(uid)
-                    && request.resource.data.uid == request.auth.uid
+      allow create: if (isOwner(uid) || isAdmin()) && isValidId(uid)
+                    && (request.resource.data.uid == request.auth.uid || isAdmin())
                     && request.resource.data.plan == 'free'
                     && request.resource.data.tokenBalance == 1000
                     && (request.resource.data.subscriptionStatus == 'free' || request.resource.data.subscriptionStatus == 'active')
@@ -29,8 +36,8 @@ service cloud.firestore {
                     && (!('subscriptionEndDate' in request.resource.data) || request.resource.data.subscriptionEndDate == null)
                     && (!('paymentCustomerId' in request.resource.data) || request.resource.data.paymentCustomerId == null)
                     && (!('paymentSubscriptionId' in request.resource.data) || request.resource.data.paymentSubscriptionId == null);
-      allow update: if isOwner(uid) && isValidId(uid)
-                    && request.resource.data.uid == request.auth.uid
+      allow update: if (isOwner(uid) || isAdmin()) && isValidId(uid)
+                    && (request.resource.data.uid == request.auth.uid || isAdmin())
                     && (
                       // 1. Safe Client Profile Update (Name, Photo, Timestamp only)
                       (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'photoURL', 'updatedAt'])
@@ -65,7 +72,7 @@ service cloud.firestore {
                        && request.resource.data.tokenBalance is int
                        && request.resource.data.tokenBalance > resource.data.tokenBalance)
                       ||
-                      // 4. Server-verified Razorpay Monthly Subscription Activation / Renewal
+                      // 4. Server-verified Razorpay Monthly Subscription Activation / Renewal (+10,000 tokens)
                       (request.resource.data.plan == 'monthly'
                        && request.resource.data.subscriptionStatus == 'active'
                        && request.resource.data.paymentProvider == 'razorpay'
@@ -87,11 +94,10 @@ service cloud.firestore {
     }
 
     match /tokenTransactions/{transactionId} {
-      allow get: if isSignedIn() && resource.data.uid == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow get, list: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
       allow create: if isSignedIn()
                     && isValidId(transactionId)
-                    && request.resource.data.uid == request.auth.uid
+                    && (request.resource.data.uid == request.auth.uid || isAdmin())
                     && request.resource.data.type in ['usage', 'credit', 'trial_grant', 'monthly_grant', 'purchase_grant']
                     && request.resource.data.amount is int
                     && request.resource.data.amount > 0
@@ -103,21 +109,28 @@ service cloud.firestore {
     }
 
     match /payments/{paymentId} {
-      allow get: if isSignedIn() && resource.data.uid == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow get, list: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
       allow create: if isSignedIn()
                     && isValidId(paymentId)
-                    && request.resource.data.uid == request.auth.uid
+                    && (request.resource.data.uid == request.auth.uid || isAdmin())
                     && request.resource.data.provider == 'razorpay'
                     && request.resource.data.currency == 'INR'
                     && request.resource.data.amount is int
-                    && request.resource.data.amount > 0
+                    && request.resource.data.amount >= 0
                     && request.resource.data.tokensGranted is int
-                    && request.resource.data.tokensGranted > 0
-                    && request.resource.data.status is string
+                    && request.resource.data.tokensGranted >= 0
+                    && request.resource.data.status in ['captured', 'failed', 'active', 'cancelled']
                     && request.resource.data.createdAt is string
                     && request.resource.data.updatedAt is string;
       allow update, delete: if false;
+    }
+
+    match /transcripts/{transcriptId} {
+      allow read, write: if isAdmin() && isValidId(transcriptId);
+    }
+
+    match /transcriptChunks/{chunkId} {
+      allow read, write: if isAdmin() && isValidId(chunkId);
     }
 
     match /{document=**} {

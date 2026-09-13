@@ -14,6 +14,7 @@ import { UserBar } from './components/UserBar';
 import { AuthCard } from './components/AuthCard';
 import { TokenUsageSection } from './components/TokenUsageSection';
 import { PricingPage } from './components/PricingPage';
+import { KnowledgeBasePage } from './components/KnowledgeBasePage';
 import { useAuth } from './context/AuthContext';
 import { generatePdfReport } from './utils/pdfGenerator';
 import { SAMPLE_REPORT, REPORT_TOKEN_COST } from './data/constants';
@@ -37,7 +38,33 @@ export const App: React.FC = () => {
   const [showQuestionHints, setShowQuestionHints] = useState(true);
   const [hasValidationAttempted, setHasValidationAttempted] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
-  const [currentView, setCurrentView] = useState<'assistant' | 'plans'>('assistant');
+  const [currentView, setCurrentView] = useState<'assistant' | 'plans' | 'knowledge'>('assistant');
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [knowledgeUsedCount, setKnowledgeUsedCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!user) {
+      setIsAdmin(false);
+      return;
+    }
+    const checkAdmin = async () => {
+      try {
+        const idToken = await user.getIdToken();
+        const res = await fetch('/api/admin/check-status', {
+          headers: { Authorization: `Bearer ${idToken}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setIsAdmin(data.isAdmin === true);
+        } else {
+          setIsAdmin(false);
+        }
+      } catch {
+        setIsAdmin(false);
+      }
+    };
+    checkAdmin();
+  }, [user]);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -104,6 +131,12 @@ export const App: React.FC = () => {
         updateTokenBalance(data._tokenBalance);
       }
       refreshProfile();
+
+      if (typeof data._knowledgeUsed === "number") {
+        setKnowledgeUsedCount(data._knowledgeUsed);
+      } else {
+        setKnowledgeUsedCount(null);
+      }
 
       setReport(data);
     } catch (err: any) {
@@ -260,26 +293,45 @@ Coach Manuj Bajaj Systems • 26 Books Authored • 10,000+ Coached
     );
   }
 
-  // 3. Authenticated View: Pricing & Subscription Management View
+  // 3. Authenticated View: Admin Knowledge Base View
+  if (currentView === 'knowledge') {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100">
+        <UserBar
+          onViewPlans={() => setCurrentView('plans')}
+          onViewKnowledge={() => setCurrentView('assistant')}
+          currentView="knowledge"
+          isAdmin={isAdmin}
+        />
+        <KnowledgeBasePage onBackToAssistant={() => setCurrentView('assistant')} />
+      </div>
+    );
+  }
+
+  // 4. Authenticated View: Pricing & Subscription Management View
   if (currentView === 'plans') {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100">
         <UserBar
           onViewPlans={() => setCurrentView('assistant')}
+          onViewKnowledge={() => setCurrentView('knowledge')}
           currentView="plans"
+          isAdmin={isAdmin}
         />
         <PricingPage onBackToAssistant={() => setCurrentView('assistant')} />
       </div>
     );
   }
 
-  // 4. Authenticated View: Sales Objections Assistant with User Dashboard Bar
+  // 5. Authenticated View: Sales Objections Assistant with User Dashboard Bar
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 pb-16">
       {/* SaaS User Bar */}
       <UserBar
         onViewPlans={() => setCurrentView('plans')}
+        onViewKnowledge={() => setCurrentView('knowledge')}
         currentView="assistant"
+        isAdmin={isAdmin}
       />
 
       <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-6 sm:pt-8 space-y-6">
@@ -375,6 +427,25 @@ Coach Manuj Bajaj Systems • 26 Books Authored • 10,000+ Coached
               onDownloadPdf={handleDownloadPdf}
               onDownloadText={handleDownloadText}
             />
+
+            {/* RAG Knowledge Enhancement Badge */}
+            {knowledgeUsedCount !== null && knowledgeUsedCount > 0 && (
+              <div className="bg-emerald-50 border border-emerald-200/80 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs text-emerald-900 shadow-xs">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                  <span className="font-bold">Coach Video Knowledge Injected:</span>
+                  <span className="text-emerald-800 hidden sm:inline">
+                    {knowledgeUsedCount} authentic video transcript {knowledgeUsedCount === 1 ? 'excerpt' : 'excerpts'} retrieved to enrich this objection playbook
+                  </span>
+                  <span className="text-emerald-800 sm:hidden">
+                    {knowledgeUsedCount} transcript {knowledgeUsedCount === 1 ? 'excerpt' : 'excerpts'}
+                  </span>
+                </div>
+                <span className="text-[10px] uppercase font-extrabold tracking-wider px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">
+                  RAG Active
+                </span>
+              </div>
+            )}
 
             {/* Navigation Tabs Bar */}
             <div className="bg-white rounded-2xl p-2 shadow-xs border border-slate-200">
